@@ -74,17 +74,19 @@
 #endif
 
 #include "hal/hal_gpio.h"
+#include "LPC845.h"
 #include <stddef.h>
 
 /*===========================================================================*
  * Private constants — LPC845 hardware limits
  *===========================================================================*/
 
-/** @brief  Only PORT0 exists on the LPC845. */
-#define LPC845_GPIO_PORT_MAX        (0u)
+/** @brief  PORT0 & PORT1 exists on the LPC845. */
+#define LPC845_GPIO_PORT_MAX        (1u)
 
-/** @brief  Highest valid pin index on the LPC845 (PIO0_0 … PIO0_53). */
-#define LPC845_GPIO_PIN_MAX         (53u)
+/** @brief  Highest valid pin index on the LPC845 (PIO0_0 … PIO0_31). */
+#define LPC845_GPIO_PIN_MAX_P0         (31u)
+#define LPC845_GPIO_PIN_MAX_P1         (21u)
 
 /** @brief  First true open-drain pin index. */
 #define LPC845_TRUE_OD_PIN_FIRST    (10u)
@@ -92,47 +94,8 @@
 /** @brief  Last true open-drain pin index. */
 #define LPC845_TRUE_OD_PIN_LAST     (11u)
 
-/*===========================================================================*
- * Private constants — IOCON bit field positions and masks
- *===========================================================================*/
 
-/** @brief  FUNC field — bits [2:0].  Value 0 selects GPIO. */
-#define IOCON_FUNC_SHIFT            (0u)
-#define IOCON_FUNC_MASK             (0x07u)
-#define IOCON_FUNC_GPIO             (0x00u)
 
-/** @brief  MODE field — bits [4:3].  Pull resistor selection. */
-#define IOCON_MODE_SHIFT            (3u)
-#define IOCON_MODE_MASK             (0x18u)
-#define IOCON_MODE_FLOAT            (0x00u)     /**< No pull (inactive).     */
-#define IOCON_MODE_PULLDOWN         (0x08u)     /**< Pull-down enabled.      */
-#define IOCON_MODE_PULLUP           (0x10u)     /**< Pull-up enabled.        */
-#define IOCON_MODE_REPEATER         (0x18u)     /**< Repeater mode.          */
-
-/** @brief  DIGIMODE bit [7].  Must be 1 for all digital/GPIO use. */
-#define IOCON_DIGIMODE_BIT          (0x80u)
-
-/** @brief  OD bit [10].  Enables pseudo open-drain mode. */
-#define IOCON_OD_BIT                (0x400u)
-
-/**
- * @brief   Mask covering all fields this port touches in a single write.
- *
- * Bits cleared: FUNC[2:0], MODE[4:3], OD[10].
- * Bits preserved: HYS[5], INV[6], FILTR[8], reserved[9], and upper bits.
- * DIGIMODE[7] is always set to 1 by this port.
- */
-#define IOCON_WRITE_MASK  (IOCON_FUNC_MASK | IOCON_MODE_MASK | IOCON_OD_BIT)
-
-/*===========================================================================*
- * Private constants — SYSCON clock enable bits (SYSAHBCLKCTRL0)
- *===========================================================================*/
-
-/** @brief  Bit 6 of SYSAHBCLKCTRL0 — GPIO clock enable. */
-#define SYSCON_GPIO_CLK_BIT         (1u << 6u)
-
-/** @brief  Bit 18 of SYSAHBCLKCTRL0 — IOCON clock enable. */
-#define SYSCON_IOCON_CLK_BIT        (1u << 18u)
 
 /*===========================================================================*
  * Private variables
@@ -150,13 +113,6 @@ static bool s_clocks_enabled = false;
  */
 static void enable_clocks(void);
 
-/**
- * @brief   Return true if the given pin is a true open-drain pad.
- *
- * @param[in]   pin_index   Zero-based pin index within PORT0.
- * @return      true for PIO0_10 and PIO0_11; false otherwise.
- */
-static bool is_true_od_pin(uint8_t pin_index);
 
 /**
  * @brief   Validate port and pin range.
@@ -170,64 +126,85 @@ static hal_gpio_status_t validate_pin(hal_gpio_pin_t pin);
  * Public function implementations
  *===========================================================================*/
 
-hal_gpio_status_t hal_gpio_pin_configure(hal_gpio_pin_t  pin,
-                                         hal_gpio_mode_t mode)
+hal_gpio_status_t hal_gpio_pin_configure(hal_gpio_pin_t pin, hal_gpio_mode_t mode)
 {
     uint32_t iocon_val;
+    uint8_t iocon_index;
     uint32_t mode_bits;
     uint32_t od_bit;
     bool     set_output;
 
+    // 1. Validar el pin antes de operar
     hal_gpio_status_t status = validate_pin(pin);
     if (status != HAL_GPIO_OK)
     {
         return status;
     }
 
-    /* True open-drain pins do not support push-pull or pull-down. */
-    if (is_true_od_pin(pin.pin))
-    {
-        if ((mode == HAL_GPIO_MODE_OUTPUT_PUSHPULL)  ||
-            (mode == HAL_GPIO_MODE_INPUT_PULLDOWN))
-        {
-            return HAL_GPIO_ERR_UNSUPPORTED_MODE;
+    // Tabla de búsqueda estática para traducir [port][pin] al índice real de IOCON
+    static const uint8_t iocon_lookup[2][32] = {
+        [0] = {
+            [0]  = IOCON_INDEX_PIO0_0,  [1]  = IOCON_INDEX_PIO0_1,  [2]  = IOCON_INDEX_PIO0_2,
+            [3]  = IOCON_INDEX_PIO0_3,  [4]  = IOCON_INDEX_PIO0_4,  [5]  = IOCON_INDEX_PIO0_5,
+            [6]  = IOCON_INDEX_PIO0_6,  [7]  = IOCON_INDEX_PIO0_7,  [8]  = IOCON_INDEX_PIO0_8,
+            [9]  = IOCON_INDEX_PIO0_9,  [10] = IOCON_INDEX_PIO0_10, [11] = IOCON_INDEX_PIO0_11,
+            [12] = IOCON_INDEX_PIO0_12, [13] = IOCON_INDEX_PIO0_13, [14] = IOCON_INDEX_PIO0_14,
+            [15] = IOCON_INDEX_PIO0_15, [16] = IOCON_INDEX_PIO0_16, [17] = IOCON_INDEX_PIO0_17,
+            [18] = IOCON_INDEX_PIO0_18, [19] = IOCON_INDEX_PIO0_19, [20] = IOCON_INDEX_PIO0_20,
+            [21] = IOCON_INDEX_PIO0_21, [22] = IOCON_INDEX_PIO0_22, [23] = IOCON_INDEX_PIO0_23,
+            [24] = IOCON_INDEX_PIO0_24, [25] = IOCON_INDEX_PIO0_25, [26] = IOCON_INDEX_PIO0_26,
+            [27] = IOCON_INDEX_PIO0_27, [28] = IOCON_INDEX_PIO0_28, [29] = IOCON_INDEX_PIO0_29,
+            [30] = IOCON_INDEX_PIO0_30, [31] = IOCON_INDEX_PIO0_31
+        },
+        [1] = {
+            [0]  = IOCON_INDEX_PIO1_0,  [1]  = IOCON_INDEX_PIO1_1,  [2]  = IOCON_INDEX_PIO1_2,
+            [3]  = IOCON_INDEX_PIO1_3,  [4]  = IOCON_INDEX_PIO1_4,  [5]  = IOCON_INDEX_PIO1_5,
+            [6]  = IOCON_INDEX_PIO1_6,  [7]  = IOCON_INDEX_PIO1_7,  [8]  = IOCON_INDEX_PIO1_8,
+            [9]  = IOCON_INDEX_PIO1_9,  [10] = IOCON_INDEX_PIO1_10, [11] = IOCON_INDEX_PIO1_11,
+            [12] = IOCON_INDEX_PIO1_12, [13] = IOCON_INDEX_PIO1_13, [14] = IOCON_INDEX_PIO1_14,
+            [15] = IOCON_INDEX_PIO1_15, [16] = IOCON_INDEX_PIO1_16, [17] = IOCON_INDEX_PIO1_17,
+            [18] = IOCON_INDEX_PIO1_18, [19] = IOCON_INDEX_PIO1_19, [20] = IOCON_INDEX_PIO1_20,
+            [21] = IOCON_INDEX_PIO1_21, [22 ... 31] = 255
         }
-    }
+    };
+
+    // Obtener el índice físico del IOCON correspondiente al pin solicitado
+    iocon_index = iocon_lookup[pin.port][pin.pin];
 
     enable_clocks();
 
-    /* --- Translate HAL mode to IOCON bits and direction --- */
-    od_bit     = 0u;
+    /* --- Traducir el modo HAL a bits de IOCON usando tus macros --- */
+    od_bit     = IOCON_PIO_OD(0); // Por defecto deshabilitado (0b0)
     set_output = false;
 
     switch (mode)
     {
         case HAL_GPIO_MODE_INPUT_FLOAT:
-            mode_bits = IOCON_MODE_FLOAT;
+            mode_bits = IOCON_PIO_MODE(0); // Inactive (0b00)
             break;
 
         case HAL_GPIO_MODE_INPUT_PULLUP:
-            mode_bits = IOCON_MODE_PULLUP;
+            mode_bits = IOCON_PIO_MODE(2); // Pull-up (0b10)
             break;
 
         case HAL_GPIO_MODE_INPUT_PULLDOWN:
-            mode_bits = IOCON_MODE_PULLDOWN;
+            mode_bits = IOCON_PIO_MODE(1); // Pull-down (0b01)
             break;
 
         case HAL_GPIO_MODE_OUTPUT_PUSHPULL:
-            mode_bits  = IOCON_MODE_FLOAT;
+            mode_bits  = IOCON_PIO_MODE(0); // Inactive (0b00)
             set_output = true;
             break;
 
         case HAL_GPIO_MODE_OUTPUT_OPENDRAIN:
-            mode_bits  = IOCON_MODE_FLOAT;
-            od_bit     = IOCON_OD_BIT;
+            mode_bits  = IOCON_PIO_MODE(0);
+            od_bit     = IOCON_PIO_OD(1);   // Open-drain enabled (0b1)
             set_output = true;
             break;
 
         case HAL_GPIO_MODE_OUTPUT_OPENDRAIN_PULLUP:
-            mode_bits  = IOCON_MODE_PULLUP;
-            od_bit     = IOCON_OD_BIT;
+            mode_bits  = IOCON_PIO_MODE(2); // Pull-up (0b10)
+            od_bit     = IOCON_PIO_OD(1);   // Open-drain enabled (0b1)
             set_output = true;
             break;
 
@@ -235,32 +212,21 @@ hal_gpio_status_t hal_gpio_pin_configure(hal_gpio_pin_t  pin,
             return HAL_GPIO_ERR_UNSUPPORTED_MODE;
     }
 
-    /* --- Write IOCON register ---
-     *
-     * Read-modify-write: preserve HYS, INV, FILTR, and reserved bits.
-     * Always set DIGIMODE (bit 7) to 1; without it the PIN register reads
-     * back 0 regardless of the actual pin state (UM11029 §12.3 Remark).
-     */
-    iocon_val  =  LPC_IOCON->PIO[pin.port][pin.pin];
-    iocon_val &= ~IOCON_WRITE_MASK;
-    iocon_val |=  IOCON_FUNC_GPIO;
-    iocon_val |=  mode_bits;
-    iocon_val |=  od_bit;
-    iocon_val |=  IOCON_DIGIMODE_BIT;
-    LPC_IOCON->PIO[pin.port][pin.pin] = iocon_val;
+    /* --- Escritura del registro IOCON corregido --- */
+    iocon_val = 0u | mode_bits | od_bit;
+    // Guardamos en el hardware usando el puntero corregido
+    IOCON->PIO[iocon_index] = iocon_val;
 
-    /* --- Set GPIO direction ---
-     *
-     * DIRSET0 and DIRCLR0 are atomic set/clear registers; no
-     * read-modify-write needed, no race condition.
-     */
+    /* --- Configuración de la dirección GPIO --- */
+    // Corrección de punteros para el periférico GPIO estándar (LPC_GPIO_PORT -> GPIO)
+    // Nota: Ajusta "GPIO" al nombre exacto de la base de GPIO de tu SDK (ej: GPIO u o_GPIO)
     if (set_output)
     {
-        LPC_GPIO_PORT->DIRSET[pin.port] = (1u << pin.pin);
+        GPIO->DIRSET[pin.port] = (1u << pin.pin);
     }
     else
     {
-        LPC_GPIO_PORT->DIRCLR[pin.port] = (1u << pin.pin);
+        GPIO->DIRCLR[pin.port] = (1u << pin.pin);
     }
 
     return HAL_GPIO_OK;
@@ -271,28 +237,18 @@ hal_gpio_status_t hal_gpio_pin_write(hal_gpio_pin_t   pin,
 {
     hal_gpio_status_t status = validate_pin(pin);
     if (status != HAL_GPIO_OK)
-    {
         return status;
-    }
 
-    if ((level != HAL_GPIO_LEVEL_LOW) && (level != HAL_GPIO_LEVEL_HIGH))
+    switch (level)
     {
-        return HAL_GPIO_ERR_INVALID_ARG;
-    }
-
-    /*
-     * SET0 and CLR0 are dedicated set/clear registers.  Writing a 1 to a
-     * bit drives the corresponding pin HIGH (SET0) or LOW (CLR0).  These
-     * are single-cycle atomic operations on the IOP bus — no
-     * read-modify-write and no critical section required.
-     */
-    if (level == HAL_GPIO_LEVEL_HIGH)
-    {
-        LPC_GPIO_PORT->SET[pin.port] = (1u << pin.pin);
-    }
-    else
-    {
-        LPC_GPIO_PORT->CLR[pin.port] = (1u << pin.pin);
+        case HAL_GPIO_LEVEL_LOW:
+            GPIO->CLR[pin.port] = (1u << pin.pin);
+            break;
+        case HAL_GPIO_LEVEL_HIGH:
+            GPIO->SET[pin.port] = (1u << pin.pin);
+            break;
+        default:
+            return HAL_GPIO_ERR_INVALID_ARG;
     }
 
     return HAL_GPIO_OK;
@@ -312,27 +268,7 @@ hal_gpio_status_t hal_gpio_pin_read(hal_gpio_pin_t    pin,
         return HAL_GPIO_ERR_INVALID_ARG;
     }
 
-    /*
-     * PIN0 samples the physical pin state regardless of direction.
-     * For output pins this reflects the driven level.
-     * For gpio_pin_toggle(), gpio.c reads via this function; the value
-     * corresponds to what the pin is actually driving since SET0/CLR0 and
-     * PIN0 stay in sync on the LPC845 output path.
-     *
-     * @note  If the caller needs to read the output latch specifically
-     *        (e.g. to toggle without a glitch if the pin is loaded),
-     *        SET0 can be read instead: it returns the output latch value.
-     *        For this framework's toggle use-case, PIN0 is sufficient
-     *        because the pin drives the load directly.
-     */
-    if ((LPC_GPIO_PORT->PIN[pin.port] & (1u << pin.pin)) != 0u)
-    {
-        *p_level = HAL_GPIO_LEVEL_HIGH;
-    }
-    else
-    {
-        *p_level = HAL_GPIO_LEVEL_LOW;
-    }
+    *p_level = (GPIO->B[pin.port][pin.pin]) ? HAL_GPIO_LEVEL_HIGH : HAL_GPIO_LEVEL_LOW;
 
     return HAL_GPIO_OK;
 }
@@ -365,14 +301,16 @@ hal_gpio_status_t hal_gpio_port_write(uint8_t  port,
      * This is a true single-write atomic operation; no read-modify-write
      * and no intermediate glitch on any pin.
      */
-    LPC_GPIO_PORT->MASK[port] = ~mask;
-    LPC_GPIO_PORT->MPIN[port] =  value;
-    LPC_GPIO_PORT->MASK[port] =  0u;
+    uint32_t prev_mask = GPIO->MASK[port];
+    GPIO->MASK[port] = ~mask;
+    GPIO->MPIN[port] =  value;
+    GPIO->MASK[port] =  prev_mask;
 
     return HAL_GPIO_OK;
 }
 
-hal_gpio_status_t hal_gpio_port_read(uint8_t   port,
+hal_gpio_status_t hal_gpio_port_read(uint8_t  port,
+                                     uint32_t mask,
                                      uint32_t *p_value)
 {
     if (port > LPC845_GPIO_PORT_MAX)
@@ -384,8 +322,10 @@ hal_gpio_status_t hal_gpio_port_read(uint8_t   port,
     {
         return HAL_GPIO_ERR_INVALID_ARG;
     }
-
-    *p_value = LPC_GPIO_PORT->PIN[port];
+    uint32_t prev_mask = GPIO->MASK[port];
+    GPIO->MASK[port] = ~mask;
+    *p_value = GPIO->MPIN[port];
+    GPIO->MASK[port] =  prev_mask;
 
     return HAL_GPIO_OK;
 }
@@ -398,29 +338,34 @@ static void enable_clocks(void)
 {
     if (!s_clocks_enabled)
     {
-        LPC_SYSCON->SYSAHBCLKCTRL0 |= SYSCON_GPIO_CLK_BIT;
-        LPC_SYSCON->SYSAHBCLKCTRL0 |= SYSCON_IOCON_CLK_BIT;
+        SYSCON->SYSAHBCLKCTRL0 |= SYSCON_SYSAHBCLKCTRL0_GPIO0(1)
+        | SYSCON_SYSAHBCLKCTRL0_GPIO1(1)
+        | SYSCON_SYSAHBCLKCTRL0_IOCON(1);
         s_clocks_enabled = true;
     }
 }
 
-static bool is_true_od_pin(uint8_t pin_index)
-{
-    return ((pin_index >= LPC845_TRUE_OD_PIN_FIRST) &&
-            (pin_index <= LPC845_TRUE_OD_PIN_LAST));
-}
 
 static hal_gpio_status_t validate_pin(hal_gpio_pin_t pin)
 {
-    if (pin.port > LPC845_GPIO_PORT_MAX)
+    switch (pin.port)
     {
-        return HAL_GPIO_ERR_INVALID_PIN;
-    }
+        case 0u:
+            if (pin.pin > LPC845_GPIO_PIN_MAX_P0)
+            {
+                return HAL_GPIO_ERR_INVALID_PIN;
+            }
+            break;
 
-    if (pin.pin > LPC845_GPIO_PIN_MAX)
-    {
-        return HAL_GPIO_ERR_INVALID_PIN;
-    }
+        case 1u:
+            if (pin.pin > LPC845_GPIO_PIN_MAX_P1)
+            {
+                return HAL_GPIO_ERR_INVALID_PIN;
+            }
+            break;
 
+        default:
+            return HAL_GPIO_ERR_INVALID_PIN;
+    }
     return HAL_GPIO_OK;
 }

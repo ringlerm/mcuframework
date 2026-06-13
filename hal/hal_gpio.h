@@ -205,7 +205,8 @@ hal_gpio_status_t hal_gpio_port_write(uint8_t  port,
  * @return  @c HAL_GPIO_ERR_INVALID_PIN if @p port is out of range.
  * @return  @c HAL_GPIO_ERR_INVALID_ARG if @p p_value is NULL.
  */
-hal_gpio_status_t hal_gpio_port_read(uint8_t   port,
+hal_gpio_status_t hal_gpio_port_read(uint8_t  port,
+                                     uint32_t mask,
                                      uint32_t *p_value);
 
 #endif /* HAL_GPIO_H */
