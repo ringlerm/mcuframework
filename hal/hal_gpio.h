@@ -153,6 +153,22 @@ hal_gpio_status_t hal_gpio_pin_configure(hal_gpio_pin_t  pin,
 hal_gpio_status_t hal_gpio_pin_write(hal_gpio_pin_t   pin,
                                      hal_gpio_level_t level);
 
+
+/**
+ * @brief   Toggle a logic level to an output pin.
+ *
+ * The pin must have been configured with an output mode; behaviour is
+ * undefined if called on a pin configured as input.
+ *
+ * @param[in]   pin     Port and pin index to drive.
+ *
+ * @return  @c HAL_GPIO_OK on success.
+ * @return  @c HAL_GPIO_ERR_INVALID_PIN if the port or pin index is out of
+ *          range.
+ */
+hal_gpio_status_t hal_gpio_pin_toggle(hal_gpio_pin_t   pin);
+
+
 /**
  * @brief   Read the current logic level of a pin.
  *

@@ -69,7 +69,7 @@
      *   - SysTick, NVIC peripheral structs
      *   - SystemCoreClock extern
      */
-    #include "LPC845.h"
+   #include "LPC845.h"
 
 #elif defined(TARGET_STM32F103C8T6)
     /**

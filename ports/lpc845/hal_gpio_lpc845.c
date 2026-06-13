@@ -73,7 +73,7 @@
 #error "Este archivo solo debe compilarse con TARGET_LPC845 definido en target.h"
 #endif
 
-#include "hal/hal_gpio.h"
+#include "hal_gpio.h"
 #include "LPC845.h"
 #include <stddef.h>
 
@@ -254,6 +254,17 @@ hal_gpio_status_t hal_gpio_pin_write(hal_gpio_pin_t   pin,
     return HAL_GPIO_OK;
 }
 
+hal_gpio_status_t hal_gpio_pin_toggle(hal_gpio_pin_t   pin)
+{
+    hal_gpio_status_t status = validate_pin(pin);
+    if (status != HAL_GPIO_OK)
+        return status;
+
+	GPIO->NOT[pin.port] = (1u << pin.pin);
+
+    return HAL_GPIO_OK;
+}
+
 hal_gpio_status_t hal_gpio_pin_read(hal_gpio_pin_t    pin,
                                     hal_gpio_level_t *p_level)
 {
@@ -272,6 +283,8 @@ hal_gpio_status_t hal_gpio_pin_read(hal_gpio_pin_t    pin,
 
     return HAL_GPIO_OK;
 }
+
+
 
 hal_gpio_status_t hal_gpio_port_write(uint8_t  port,
                                       uint32_t mask,
