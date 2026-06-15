@@ -2,26 +2,27 @@
  * @file    soft_timers.h
  * @brief   Software timer library based on a periodic tick source.
  *
- * Provides a pool of statically-allocated, non-blocking software timers driven
- * by a caller-supplied tick (e.g. SysTick ISR).  No dynamic memory is used.
+ * @details Provides a pool of statically-allocated, non-blocking software timers driven
+ * by a caller-supplied tick (e.g. SysTick ISR). No dynamic memory is used.
  *
  * ### Typical usage
  * @code
- *   // 1. Initialise once, passing the tick frequency.
- *   soft_timers_init(1000u);          // 1 kHz tick → 1 ms resolution
+ * // 1. Initialise once, passing the core clock and target tick frequency.
+ * //    Example: 12 MHz core clock, 1000 Hz tick -> 1 ms resolution.
+ * soft_timers_init(12000000u, 1000u);
  *
- *   // 2. Start a timer (timer 0, 500 ms, with a callback).
- *   soft_timer_start(0u, soft_timers_ms_to_ticks(500u), my_callback);
+ * // 2. Start a timer (timer 0, 500 ms, with a callback).
+ * soft_timer_start(0u, soft_timers_ms_to_ticks(500u), my_callback);
  *
- *   // 3. In the SysTick ISR:
- *   soft_timers_tick();
- *
- *   // 4. In the main loop:
- *   soft_timers_process();
+ * // 3. In the main loop:
+ * while (1)
+ * {
+ * soft_timers_process();
+ * }
  * @endcode
  *
  * @note    Timer callbacks are executed from the context in which
- *          soft_timers_process() is called, NOT from interrupt context.
+ * soft_timers_process() is called, NOT from interrupt context.
  *
  * @author  mcuframework contributors
  * @date    2025
@@ -32,6 +33,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "hal_systick.h"
 
 /*===========================================================================*
  * Public constants
@@ -59,61 +61,86 @@ typedef uint8_t soft_timer_id_t;
  */
 typedef void (*soft_timer_callback_t)(void);
 
+/**
+ * @brief   Return-status codes used by the soft_timers API.
+ */
+typedef enum
+{
+    SOFT_TIMERS_OK              = 0,    /**< Operation succeeded.             */
+    SOFT_TIMERS_ERR_INVALID_ARG = 1,    /**< A parameter was out of range.    */
+    SOFT_TIMERS_ERR_HW_FAULT    = 2     /**< Underlying hardware setup failed.*/
+} soft_timers_status_t;
+
 /*===========================================================================*
  * Public function prototypes
  *===========================================================================*/
 
 /**
- * @brief   Initialise the software-timer subsystem.
+ * @brief   Initialise the software-timer subsystem and underlying hardware tick.
  *
- * Must be called once before any other soft_timer_* function.
- * Clears every timer slot and stores the tick frequency used for
- * time-unit conversions.
+ * @details Must be called once before any other soft_timer_* function.
+ * Clears every timer slot, stores the tick frequency used for
+ * time-unit conversions, and configures the SysTick peripheral.
  *
+ * @param[in]   cpu_hz      Core clock frequency in Hz (typically SystemCoreClock).
+ * Must be greater than zero.
  * @param[in]   tick_hz     Frequency (Hz) at which soft_timers_tick() will
- *                          be called.  Must be greater than zero.
+ * be called. Must be greater than zero.
+ *
+ * @return  @c SOFT_TIMERS_OK on success.
+ * @return  @c SOFT_TIMERS_ERR_INVALID_ARG if any parameter is zero.
+ * @return  @c SOFT_TIMERS_ERR_HW_FAULT if the underlying HAL initialization fails.
  */
-void soft_timers_init(uint32_t tick_hz);
+soft_timers_status_t soft_timers_init(uint32_t cpu_hz, uint32_t tick_hz);
 
 /**
  * @brief   Start (or restart) a software timer.
  *
- * If the timer identified by @p id is already running it is restarted with
+ * @details If the timer identified by @p id is already running it is restarted with
  * the new parameters.
  *
  * @param[in]   id          Timer index (0 … SOFT_TIMERS_MAX_TIMERS - 1).
- * @param[in]   duration    Duration expressed in ticks.  A value of 0 is
- *                          treated as an immediate expiry on the next call
- *                          to soft_timers_process().
+ * @param[in]   duration    Duration expressed in ticks. A value of 0 is
+ * treated as an immediate expiry on the next call
+ * to soft_timers_process().
  * @param[in]   callback    Function to invoke on expiry, or NULL.
+ *
+ * @return  @c SOFT_TIMERS_OK on success.
+ * @return  @c SOFT_TIMERS_ERR_INVALID_ARG if @p id exceeds the maximum allowed limits.
  */
-void soft_timer_start(soft_timer_id_t id,
-                      uint32_t        duration,
-                      soft_timer_callback_t callback);
+soft_timers_status_t soft_timer_start(soft_timer_id_t       id,
+                                      uint32_t              duration,
+                                      soft_timer_callback_t callback);
 
 /**
  * @brief   Stop a running software timer.
  *
- * The timer is halted and its expired flag is cleared.  If the timer is
+ * @details The timer is halted and its expired flag is cleared. If the timer is
  * already stopped this function has no effect.
  *
  * @param[in]   id  Timer index (0 … SOFT_TIMERS_MAX_TIMERS - 1).
+ *
+ * @return  @c SOFT_TIMERS_OK on success.
+ * @return  @c SOFT_TIMERS_ERR_INVALID_ARG if @p id exceeds the maximum allowed limits.
  */
-void soft_timer_stop(soft_timer_id_t id);
+soft_timers_status_t soft_timer_stop(soft_timer_id_t id);
 
 /**
  * @brief   Return whether a timer is currently active (counting down).
  *
- * @param[in]   id  Timer index (0 … SOFT_TIMERS_MAX_TIMERS - 1).
- * @return      @c true  if the timer is running (ticks > 0 and not expired),
- *              @c false otherwise.
+ * @param[in]   id              Timer index (0 … SOFT_TIMERS_MAX_TIMERS - 1).
+ * @param[out]  p_is_running    Pointer to a boolean variable where the running state 
+ * will be stored (@c true if running, @c false otherwise).
+ *
+ * @return  @c SOFT_TIMERS_OK on success.
+ * @return  @c SOFT_TIMERS_ERR_INVALID_ARG if @p id is invalid or @p p_is_running is NULL.
  */
-bool soft_timer_is_running(soft_timer_id_t id);
+soft_timers_status_t soft_timer_is_running(soft_timer_id_t id, bool *p_is_running);
 
 /**
  * @brief   Convert milliseconds to ticks.
  *
- * The result depends on the tick frequency supplied to soft_timers_init().
+ * @details The result depends on the tick frequency supplied to soft_timers_init().
  *
  * @param[in]   ms  Time in milliseconds.
  * @return      Equivalent number of ticks (rounded down).
@@ -133,21 +160,20 @@ uint32_t soft_timers_us_to_ticks(uint32_t us);
  *
  * @par ISR usage
  * This function is designed to be called from a periodic interrupt handler
- * (e.g. SysTick) at the frequency given to soft_timers_init().  It is kept
+ * (e.g. SysTick) at the frequency given to soft_timers_init(). It is kept
  * minimal to reduce interrupt latency.
  *
  * @warning Must NOT be called from main-loop context if the tick source is
- *          an ISR; doing so introduces a race condition.
+ * an ISR; doing so introduces a race condition.
  */
 void soft_timers_tick(void);
 
 /**
  * @brief   Dispatch callbacks for all expired timers.
  *
- * Scans the timer pool and, for every timer that has expired, clears the
+ * @details Scans the timer pool and, for every timer that has expired, clears the
  * expired flag and invokes its callback (if one was registered).
- *
- * Must be called regularly from the main loop or a suitable task.  It must
+ * Must be called regularly from the main loop or a suitable task. It must
  * NOT be called from interrupt context.
  */
 void soft_timers_process(void);

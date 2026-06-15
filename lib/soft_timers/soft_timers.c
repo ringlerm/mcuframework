@@ -2,18 +2,18 @@
  * @file    soft_timers.c
  * @brief   Software timer library — implementation.
  *
- * See soft_timers.h for the public interface and usage notes.
+ * @details See soft_timers.h for the public interface and usage notes.
  *
  * ### Design notes
  * - All storage is statically allocated; no heap usage.
  * - soft_timers_tick() is ISR-safe by design: it only decrements counters and
- *   sets a boolean flag, avoiding any complex logic in interrupt context.
+ * sets a boolean flag, avoiding any complex logic in interrupt context.
  * - soft_timers_process() performs callback dispatch from non-ISR context,
- *   eliminating the need for critical-section guards on most architectures
- *   where reading/writing aligned 32-bit words is atomic.  On architectures
- *   where this does not hold, the integrator should wrap the tick
- *   decrement / expired-flag read with appropriate memory barriers or
- *   critical sections.
+ * eliminating the need for critical-section guards on most architectures
+ * where reading/writing aligned 32-bit words is atomic. On architectures
+ * where this does not hold, the integrator should wrap the tick
+ * decrement / expired-flag read with appropriate memory barriers or
+ * critical sections.
  *
  * @author  mcuframework contributors
  * @date    2025
@@ -65,8 +65,13 @@ static bool is_valid_id(soft_timer_id_t id)
  * Public function implementations
  *===========================================================================*/
 
-void soft_timers_init(uint32_t tick_hz)
+soft_timers_status_t soft_timers_init(uint32_t cpu_hz, uint32_t tick_hz)
 {
+    if ((cpu_hz == 0u) || (tick_hz == 0u))
+    {
+        return SOFT_TIMERS_ERR_INVALID_ARG;
+    }
+
     s_tick_hz = tick_hz;
 
     for (uint8_t i = 0u; i < (uint8_t)SOFT_TIMERS_MAX_TIMERS; i++)
@@ -76,49 +81,69 @@ void soft_timers_init(uint32_t tick_hz)
         s_timers[i].expired  = false;
         s_timers[i].callback = NULL;
     }
+
+    /* Initialise SysTick with the calculated millisecond interval value derived from input frequencies */
+    if (hal_systick_init(cpu_hz, 1000u / tick_hz) != HAL_SYSTICK_OK)
+    {
+        return SOFT_TIMERS_ERR_HW_FAULT;
+    }
+
+    /* Register the tick function as a SysTick subscriber */
+    if (hal_systick_register_callback(soft_timers_tick) != HAL_SYSTICK_OK)
+    {
+        return SOFT_TIMERS_ERR_HW_FAULT;
+    }
+
+    return SOFT_TIMERS_OK;
 }
 
 /* -------------------------------------------------------------------------- */
 
-void soft_timer_start(soft_timer_id_t       id,
-                      uint32_t              duration,
-                      soft_timer_callback_t callback)
+soft_timers_status_t soft_timer_start(soft_timer_id_t       id,
+                                      uint32_t              duration,
+                                      soft_timer_callback_t callback)
 {
-    if (!is_valid_id(id))
+    if (!is_valid_id(id) || (duration == 0u))
     {
-        return;
+        return SOFT_TIMERS_ERR_INVALID_ARG;
     }
 
     s_timers[id].ticks    = duration;
     s_timers[id].expired  = false;
     s_timers[id].callback = callback;
     s_timers[id].active   = true;
+
+    return SOFT_TIMERS_OK;
 }
 
 /* -------------------------------------------------------------------------- */
 
-void soft_timer_stop(soft_timer_id_t id)
+soft_timers_status_t soft_timer_stop(soft_timer_id_t id)
 {
     if (!is_valid_id(id))
     {
-        return;
+        return SOFT_TIMERS_ERR_INVALID_ARG;
     }
 
     s_timers[id].ticks   = 0u;
     s_timers[id].active  = false;
     s_timers[id].expired = false;
+
+    return SOFT_TIMERS_OK;
 }
 
 /* -------------------------------------------------------------------------- */
 
-bool soft_timer_is_running(soft_timer_id_t id)
+soft_timers_status_t soft_timer_is_running(soft_timer_id_t id, bool *p_is_running)
 {
-    if (!is_valid_id(id))
+    if (!is_valid_id(id) || (p_is_running == NULL))
     {
-        return false;
+        return SOFT_TIMERS_ERR_INVALID_ARG;
     }
 
-    return (s_timers[id].active && !s_timers[id].expired);
+    *p_is_running = (s_timers[id].active && !s_timers[id].expired);
+    
+    return SOFT_TIMERS_OK;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -137,12 +162,6 @@ uint32_t soft_timers_us_to_ticks(uint32_t us)
 
 /* -------------------------------------------------------------------------- */
 
-/**
- * @brief   Decrement all active timers by one tick.
- *
- * Called from the periodic interrupt (e.g. SysTick).  Kept intentionally
- * minimal to reduce ISR latency.
- */
 void soft_timers_tick(void)
 {
     for (uint8_t i = 0u; i < (uint8_t)SOFT_TIMERS_MAX_TIMERS; i++)
@@ -162,12 +181,6 @@ void soft_timers_tick(void)
 
 /* -------------------------------------------------------------------------- */
 
-/**
- * @brief   Dispatch callbacks for all expired timers.
- *
- * Clears each expired flag before invoking the callback so that a callback
- * may safely restart its own timer without the flag being overwritten.
- */
 void soft_timers_process(void)
 {
     for (uint8_t i = 0u; i < (uint8_t)SOFT_TIMERS_MAX_TIMERS; i++)

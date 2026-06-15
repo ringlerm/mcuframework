@@ -2,62 +2,54 @@
  * @file    hal_systick.h
  * @brief   Hardware Abstraction Layer — SysTick periodic tick source.
  *
- * @details This module provides a platform-independent interface for a
- *          periodic system tick used as the time base for the rest of the
- *          framework (primarily soft_timers).
+ * @details This module provides an interface for a periodic system tick used 
+ * as the time base for the rest of the framework (primarily soft_timers).
  *
- *          The HAL layer declares the contract (this header).  The concrete
- *          register-level implementation lives in the corresponding port file
- *          under @c ports/<target>/hal_systick_<target>.c.
+ * The concrete register-level implementation lives directly within the
+ * target source file hal_systick_lpc845.c.
  *
- *          ### Default tick period
- *          Unless overridden at compile time, the tick period defaults to
- *          1 ms (1 kHz), which matches the default resolution expected by
- *          soft_timers.  Override by defining @c HAL_SYSTICK_DEFAULT_PERIOD_MS
- *          in your build system or before including this header:
- *          @code
- *          #define HAL_SYSTICK_DEFAULT_PERIOD_MS  (5u)   // 5 ms tick
- *          #include "hal/hal_systick.h"
- *          @endcode
+ * ### Default tick period
+ * Unless overridden at compile time, the tick period defaults to
+ * 1 ms (1 kHz), which matches the default resolution expected by
+ * soft_timers.  Override by defining @c HAL_SYSTICK_DEFAULT_PERIOD_MS
+ * in your build system or before including this header:
+ * @code
+ * #define HAL_SYSTICK_DEFAULT_PERIOD_MS  (5u)   // 5 ms tick
+ * #include "hal/hal_systick.h"
+ * @endcode
  *
- *          ### Typical integration sequence
- *          @code
- *          // main.c
- *          #include "hal/hal_systick.h"
- *          #include "lib/soft_timers/soft_timers.h"
+ * ### Typical integration sequence
+ * @code
+ * // main.c
+ * #include "hal/hal_systick.h"
+ * #include "lib/soft_timers/soft_timers.h"
  *
- *          int main(void)
- *          {
- *              // 1. Start SysTick at 1 ms (default), 72 MHz core clock.
- *              hal_systick_init(72000000u, HAL_SYSTICK_DEFAULT_PERIOD_MS);
+ * int main(void)
+ * {
+ * // 1. Sync SystemCoreClock and start SysTick at 1 ms (default).
+ * SystemCoreClockUpdate();
+ * hal_systick_init(SystemCoreClock, HAL_SYSTICK_DEFAULT_PERIOD_MS);
  *
- *              // 2. Hand the same tick rate to soft_timers.
- *              soft_timers_init(hal_systick_get_tick_hz());
+ * // 2. Hand the same tick rate to soft_timers.
+ * soft_timers_init(hal_systick_get_tick_hz());
  *
- *              // 3. Register the soft-timer tick as a SysTick subscriber.
- *              hal_systick_register_callback(soft_timers_tick);
+ * // 3. Register the soft-timer tick as a SysTick subscriber.
+ * hal_systick_register_callback(soft_timers_tick);
  *
- *              while (1)
- *              {
- *                  soft_timers_process();
- *              }
- *          }
- *          @endcode
+ * while (1)
+ * {
+ * soft_timers_process();
+ * }
+ * }
+ * @endcode
  *
- *          ### ISR wiring
- *          The port implementation must call @c hal_systick_isr_handler()
- *          from the hardware interrupt vector.  On Cortex-M devices this is
- *          typically:
- *          @code
- *          void SysTick_Handler(void)
- *          {
- *              hal_systick_isr_handler();
- *          }
- *          @endcode
+ * ### ISR wiring
+ * The driver implements the hardware @c SysTick_Handler() internally,
+ * meaning no manual vector wiring is required by the user application.
  *
  * @note    All callback functions registered via
- *          @c hal_systick_register_callback() execute in ISR context and
- *          therefore must be short, non-blocking, and ISR-safe.
+ * @c hal_systick_register_callback() execute in ISR context and
+ * therefore must be short, non-blocking, and ISR-safe.
  *
  * @author  mcuframework contributors
  * @date    2025
@@ -125,21 +117,20 @@ typedef enum
 /**
  * @brief   Initialise and start the SysTick peripheral.
  *
- * Configures the hardware to generate a periodic interrupt at the requested
- * period and enables the interrupt.  If this function is called while the
+ * Configures the hardware registers to generate a periodic interrupt at the requested
+ * period and enables the interrupt. If this function is called while the
  * peripheral is already running, it is reconfigured with the new parameters.
  *
- * @param[in]   cpu_hz      Core clock frequency in Hz (e.g. 72000000u for
- *                          72 MHz).  Must be greater than zero.
+ * @param[in]   cpu_hz      Core clock frequency in Hz (typically SystemCoreClock).
+ * Must be greater than zero.
  * @param[in]   period_ms   Interrupt period in milliseconds.
- *                          Use @c HAL_SYSTICK_DEFAULT_PERIOD_MS for the
- *                          framework default (1 ms).  Must be > 0.
+ * Use @c HAL_SYSTICK_DEFAULT_PERIOD_MS for the
+ * framework default (1 ms).  Must be > 0.
  *
  * @return  @c HAL_SYSTICK_OK on success.
  * @return  @c HAL_SYSTICK_ERR_INVALID_ARG if any parameter is zero.
  * @return  @c HAL_SYSTICK_ERR_HW_FAULT if the reload value exceeds the
- *          counter's maximum (hardware cannot achieve the requested period
- *          at the given clock frequency).
+ * counter's maximum even using the internal half-clock divider.
  */
 hal_systick_status_t hal_systick_init(uint32_t cpu_hz, uint32_t period_ms);
 
@@ -169,7 +160,7 @@ hal_systick_status_t hal_systick_register_callback(hal_systick_callback_t callba
  * @brief   Unregister a previously registered callback.
  *
  * @param[in]   callback    Pointer that was previously passed to
- *                          hal_systick_register_callback().
+ * hal_systick_register_callback().
  *
  * @return  @c HAL_SYSTICK_OK if the callback was removed.
  * @return  @c HAL_SYSTICK_ERR_INVALID_ARG if @p callback is NULL.
@@ -185,7 +176,7 @@ hal_systick_status_t hal_systick_unregister_callback(hal_systick_callback_t call
  *
  * Use this to initialise soft_timers with the exact same frequency:
  * @code
- *   soft_timers_init(hal_systick_get_tick_hz());
+ * soft_timers_init(hal_systick_get_tick_hz());
  * @endcode
  *
  * @return  Tick frequency in Hz, or 0 if uninitialised.
@@ -205,27 +196,14 @@ uint32_t hal_systick_get_tick_count(void);
 /**
  * @brief   Blocking delay using the SysTick counter.
  *
- * Spins until @p ms milliseconds have elapsed.  Intended only for
- * initialisation sequences; use soft_timers for non-blocking delays.
+ * Spins until @p ms milliseconds have elapsed based on the active resolution.
+ * Intended only for initialisation sequences; use soft_timers for non-blocking delays.
  *
  * @warning Calling this function with interrupts disabled will hang forever.
  *
  * @param[in]   ms  Number of milliseconds to wait.  A value of 0 returns
- *                  immediately.
+ * immediately.
  */
 void hal_systick_delay_ms(uint32_t ms);
-
-/**
- * @brief   SysTick ISR body — must be called from the hardware vector.
- *
- * Increments the internal tick counter and dispatches all registered
- * callbacks.  The port implementation wires this into the hardware vector:
- * @code
- *   void SysTick_Handler(void) { hal_systick_isr_handler(); }
- * @endcode
- *
- * @note    This function executes in interrupt context.
- */
-void hal_systick_isr_handler(void);
 
 #endif /* HAL_SYSTICK_H */

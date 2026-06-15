@@ -70,6 +70,7 @@
      *   - SystemCoreClock extern
      */
    #include "LPC845.h"
+   #define CLK_HZ 120000000u /* 12 MHz FRO default clock; update if you change the clock setup */
 
 #elif defined(TARGET_STM32F103C8T6)
     /**
@@ -83,7 +84,6 @@
      *   - SystemCoreClock extern
      */
     #include "stm32f1xx.h"
-
 #elif defined(TARGET_STM32F401CCU6)
     /**
      * @brief   ST STM32F4xx family header — Black Pill v1 (STM32F401CCU6).
